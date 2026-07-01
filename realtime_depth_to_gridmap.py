@@ -26,6 +26,7 @@ from depth_to_gridmap import (
     DepthGridmapConfig, 
     generate_gridmap_from_depth,
     resolve_path,
+    save_occupancy_grid_png,
 )
 from pointcloud_to_gridmap import save_grid_png
 
@@ -120,6 +121,7 @@ def save_realtime_outputs(
     depth: np.ndarray,
     gridmap: np.ndarray,
     metrics: dict,
+    occupancy_grid: np.ndarray | None = None,
 ) -> None:
     """Save one realtime sample as depth, grid, preview PNG, and metrics JSON."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -128,6 +130,8 @@ def save_realtime_outputs(
     grid_npy_path = output_dir / f"gridmap_{save_index:04d}.npy"
     grid_png_path = output_dir / f"gridmap_{save_index:04d}.png"
     metrics_path = output_dir / f"metrics_{save_index:04d}.json"
+    occupancy_npy_path = output_dir / f"occupancy_grid_{save_index:04d}.npy"
+    occupancy_png_path = output_dir / f"occupancy_grid_{save_index:04d}.png"
 
     np.save(depth_path, depth)
     np.save(grid_npy_path, gridmap.astype(np.uint8))
@@ -141,12 +145,30 @@ def save_realtime_outputs(
         resolution=metrics["resolution"],
         obstacle_cells=metrics["occupied_cells"],
     )
+    occupancy_payload = {}
+    if occupancy_grid is not None:
+        np.save(occupancy_npy_path, occupancy_grid.astype(np.int16))
+        save_occupancy_grid_png(
+            occupancy_grid,
+            occupancy_png_path,
+            min_x=metrics["min_x"],
+            max_x=metrics["max_x"],
+            min_z=metrics["min_z"],
+            max_z=metrics["max_z"],
+            resolution=metrics["resolution"],
+            metrics=metrics,
+        )
+        occupancy_payload = {
+            "occupancy_grid_npy": str(occupancy_npy_path),
+            "occupancy_grid_png": str(occupancy_png_path),
+        }
 
     payload = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "depth_npy": str(depth_path),
         "gridmap_npy": str(grid_npy_path),
         "gridmap_png": str(grid_png_path),
+        **occupancy_payload,
         **metrics,
     }
     metrics_path.write_text(
@@ -207,6 +229,36 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--ground-y-threshold", "--ground_y_threshold", type=float, default=-0.45)
     parser.add_argument("--min-component-size", "--min_component_size", type=int, default=1)
+    parser.add_argument(
+        "--enable-raycast",
+        "--enable_raycast",
+        dest="enable_raycast",
+        action="store_true",
+        help="Build a ROS-style -1/0/100 OccupancyGrid with free-space ray casting.",
+    )
+    parser.add_argument(
+        "--ray-step",
+        "--ray_step",
+        dest="ray_step",
+        type=float,
+        default=None,
+        help="Ray sampling step in meters. Grid-level ray casting currently defaults to resolution.",
+    )
+    parser.add_argument(
+        "--raycast-stride",
+        "--raycast_stride",
+        dest="raycast_stride",
+        type=int,
+        default=1,
+        help="Use every Nth filtered point for free-space ray casting. Default: 1",
+    )
+    parser.add_argument(
+        "--save-occupancy-grid",
+        "--save_occupancy_grid",
+        dest="save_occupancy_grid",
+        action="store_true",
+        help="Save occupancy_grid_XXXX.npy/png when saving realtime samples. Implies --enable-raycast.",
+    )
     parser.add_argument(
         "--y_axis_up",
         action=argparse.BooleanOptionalAction,
@@ -271,6 +323,9 @@ def build_processing_config(args: argparse.Namespace) -> DepthGridmapConfig:
         ground_y_threshold=args.ground_y_threshold,
         min_component_size=args.min_component_size,
         y_axis_up=args.y_axis_up,
+        enable_raycast=args.enable_raycast,
+        ray_step=args.ray_step,
+        raycast_stride=args.raycast_stride,
     )
 
 
@@ -280,12 +335,17 @@ def main(argv: Iterable[str] | None = None) -> None:
         raise ValueError("--process_every_n_frames must be >= 1")
     if args.save_every_n_frames < 0:
         raise ValueError("--save_every_n_frames must be >= 0")
+    if args.raycast_stride < 1:
+        raise ValueError("--raycast-stride must be >= 1")
+    if args.save_occupancy_grid:
+        args.enable_raycast = True
 
     output_dir = resolve_path(args.output_dir)
     config = build_processing_config(args)
     context = None
     cv2 = None
     latest_gridmap = None
+    latest_occupancy_grid = None
     latest_metrics = None
     frame_index = 0
     processed_count = 0
@@ -318,6 +378,8 @@ def main(argv: Iterable[str] | None = None) -> None:
             print("Periodic saving is disabled. Use --save_every_n_frames N to enable it.")
         else:
             print(f"Saving every {args.save_every_n_frames} processed frames to {output_dir}")
+        if args.enable_raycast:
+            print("Ray-casting OccupancyGrid is enabled. Realtime preview still shows the binary gridmap.")
 
         while True:
             frame_index += 1
@@ -326,7 +388,12 @@ def main(argv: Iterable[str] | None = None) -> None:
 
             if should_process:
                 start_time = time.perf_counter()
-                latest_gridmap, latest_metrics, _ = generate_gridmap_from_depth(depth, config)
+                latest_gridmap, latest_metrics, debug = generate_gridmap_from_depth(
+                    depth,
+                    config,
+                    include_debug=args.enable_raycast,
+                )
+                latest_occupancy_grid = debug.get("occupancy_grid") if debug else None
                 processing_time = time.perf_counter() - start_time
                 processed_count += 1
                 total_processing_time += processing_time
@@ -369,6 +436,7 @@ def main(argv: Iterable[str] | None = None) -> None:
                         depth=depth,
                         gridmap=latest_gridmap,
                         metrics=latest_metrics,
+                        occupancy_grid=latest_occupancy_grid if args.save_occupancy_grid else None,
                     )
                     print(f"Saved realtime sample {save_count:04d} to {output_dir}")
 

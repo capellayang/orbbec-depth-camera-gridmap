@@ -7,10 +7,16 @@ This document records the current state of the Orbbec Astra Pro Plus depth camer
 Learn the mapping pipeline step by step:
 
 ```text
-Depth acquisition -> Depth display -> 3D projection -> Point cloud -> Point cloud filtering -> X-Z projection -> 2D local occupancy grid -> SLAM foundations
+Depth frame -> 3D projection -> filtering -> binary local gridmap -> ray-casting OccupancyGrid -> ROS2 OccupancyGrid node
 ```
 
-The project has reached the early stage of generating a single-frame 2D local occupancy grid from a saved `.ply` point cloud. The next best step is to add height filtering, ground removal, and a more standard occupancy grid model with occupied / free / unknown cells.
+The project now keeps the original binary local grid map flow and adds a first ray-casting three-value OccupancyGrid flow for ROS2/Nav2-style mapping.
+
+Grid value conventions:
+
+- Binary `gridmap.npy`: `0 = non-obstacle`, `1 = occupied`.
+- Three-value `occupancy_grid.npy`: `-1 = unknown`, `0 = free`, `100 = occupied`.
+- The realtime preview window still displays the binary grid map. Three-value OccupancyGrid output is currently saved for offline inspection and later ROS2 integration.
 
 ## Completed
 
@@ -32,23 +38,66 @@ The project has reached the early stage of generating a single-frame 2D local oc
 - Viewed and filtered point clouds with Open3D.
 - Generated a first 2D local occupancy grid from a single `.ply` point cloud.
 - Centralized OpenNI path and cleanup helpers in `orbbec_openni_utils.py`.
+- Converted saved depth frames directly to binary local grid maps in `depth_to_gridmap.py`.
+- Converted realtime Orbbec depth frames to local grid maps in `realtime_depth_to_gridmap.py`.
+- Fused multiple binary grid maps with temporal voting in `fuse_gridmaps.py`.
+- Added first ray-casting three-value OccupancyGrid support:
+  - camera-to-obstacle rays mark observed cells as free,
+  - obstacle endpoint cells are marked occupied after the point-count threshold,
+  - unobserved cells stay unknown.
+  - `occupancy_grid.npy` and `occupancy_grid.png` can be generated alongside the old binary outputs.
 
 ## In Progress
 
-- Stabilizing OpenNI2 startup and shutdown on Windows.
-- Cleaning the project direction away from person extraction and toward robot mapping.
-- Improving the occupancy grid pipeline.
+- Validating three-value map quality with real Orbbec camera data.
+- Tuning free / unknown / occupied parameters.
+- Optimizing ray casting performance for realtime use.
+- Preparing the ROS2 node wrapper.
 
 ## Next Steps
 
-1. Add Y-axis height filtering to remove points that are too high or too low for obstacle mapping.
-2. Add ground removal so the floor is not treated as an obstacle.
-3. Update occupancy grid logic to distinguish `occupied`, `free`, and `unknown`.
-4. Add ray casting from the camera origin to mark free space.
-5. Try multi-frame fusion after adding pose or odometry.
-6. Study pose estimation.
-7. Move the pipeline into ROS2.
-8. Integrate with Nav2 or RTAB-Map.
+1. Test the ray-casting three-value map with the real Orbbec camera.
+2. Confirm left / right / forward directions are consistent in PNG and `.npy` outputs.
+3. Optimize ray casting performance.
+4. Read true intrinsics from `/camera/depth/camera_info`.
+5. Package a ROS2 Python node that subscribes to depth image and camera info.
+6. Publish `nav_msgs/OccupancyGrid`.
+7. Later consider TF, odom, multi-frame pose alignment, Nav2, or RTAB-Map integration.
+
+## Current OccupancyGrid Usage
+
+Default depth-to-grid behavior remains compatible:
+
+```powershell
+python depth_to_gridmap.py
+```
+
+Generate the new three-value OccupancyGrid outputs:
+
+```powershell
+python depth_to_gridmap.py --enable-raycast --save-occupancy-grid
+```
+
+Additional ray-casting parameters:
+
+- `--enable-raycast`: generate the in-memory `-1/0/100` OccupancyGrid.
+- `--save-occupancy-grid`: save `occupancy_grid.npy` and `occupancy_grid.png`; this implies `--enable-raycast`.
+- `--ray-step`: recorded ray sampling step; the current implementation uses grid-level Bresenham traversal and defaults this value to `resolution`.
+- `--raycast-stride`: use every Nth filtered point for free-space ray casting.
+
+Expected offline outputs:
+
+- `data/gridmap_from_depth/gridmap.npy`
+- `data/gridmap_from_depth/gridmap.png`
+- `data/gridmap_from_depth/occupancy_grid.npy`
+- `data/gridmap_from_depth/occupancy_grid.png`
+- `data/gridmap_from_depth/config.json`
+
+Realtime saving can also include three-value maps:
+
+```powershell
+python realtime_depth_to_gridmap.py --enable-raycast --save-occupancy-grid --save_every_n_frames 30
+```
 
 ## Paused or Deprecated Experiments
 
@@ -122,7 +171,11 @@ test_depth_minimal.py
   -> depth_to_pointcloud.py
   -> view_ply.py
   -> process_pointcloud.py
-  -> pointcloud_to_occupancy_grid.py
+  -> pointcloud_to_gridmap.py
+  -> depth_to_gridmap.py
+  -> realtime_depth_to_gridmap.py
+  -> fuse_gridmaps.py
+  -> ROS2 OccupancyGrid node
 ```
 
 ## Technical Roadmap
@@ -135,18 +188,18 @@ test_depth_minimal.py
 | 4 | Point cloud generation | Done |
 | 5 | Point cloud filtering | First version done |
 | 6 | Single-frame local occupancy grid | First version done |
-| 7 | Height filtering | Next |
-| 8 | Ground removal | Next |
-| 9 | Free-space ray casting | Planned |
-| 10 | Multi-frame fusion | Planned |
-| 11 | Pose estimation | Planned |
-| 12 | SLAM | Planned |
+| 7 | Height filtering | First version done |
+| 8 | Ground removal | First version done |
+| 9 | Free-space ray casting | First version done |
+| 10 | Three-value OccupancyGrid validation | In progress |
+| 11 | Multi-frame binary grid fusion | First version done |
+| 12 | Pose estimation | Planned |
 | 13 | ROS2 / Nav2 integration | Planned |
 
 ## Important Notes
 
-- Current project status: single-frame point cloud to 2D local occupancy grid has been implemented at a beginner level.
-- The next priority is height filtering, ground removal, and a more standard occupancy grid.
+- Current project status: depth-frame and realtime binary local grid maps are implemented, and a first ray-casting three-value OccupancyGrid output is available.
+- The next priority is validating map quality, tuning free/unknown/occupied behavior, and preparing ROS2 publication.
 - `depth_display.png` or `depth_show_*.png` images are visualization outputs only and must not be used as raw depth.
 - Avoid using `person.ply` as the current mapping input unless intentionally reviewing the old person extraction experiment.
 - Do not delete old experiment files yet; archive them when the main mapping pipeline is cleaner.
