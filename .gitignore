@@ -1,0 +1,53 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Conda
+.conda/
+conda-meta/
+
+# IDE
+.vscode/
+.idea/
+
+# Large data files
+*.npy
+*.npz
+*.ply
+*.pcd
+*.bag
+*.db3
+
+# Images and generated outputs
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.gif
+*.mp4
+*.avi
+
+# Project output folders
+data/
+depth_data/
+grid_data/
+output/
+outputs/
+results/
+logs/
+
+# Runtime / generated result files
+candidate_clusters_info.txt
+obstacle_result.json
+
+# OS files
+.DS_Store
+Thumbs.db
